@@ -1,4 +1,4 @@
-# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + 3x Reed)
+# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + Reed)
 
 ## Hardware
 - Heltec CubeCell AB01
@@ -8,7 +8,7 @@
 
 ## PCB Layout
 - The PCB design is located in the `Fritzing` folder in `LoRaWan_Sensor01.fzz`.
-- Direct order (Aisler): https://aisler.net/p/VXRWBTJL
+- Direct order (Aisler): https://aisler.net/p/UXGEYAMX
 - Connector `Sensor[1-5]` = `DHT22, DS18B20 or Reed contact`
 - Connector `Send` = `Immediate send trigger`
 - Connector `Solar` = `Solar module for battery charging`

@@ -1,4 +1,4 @@
-# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + 3x Reed)
+# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + Reed)
 
 ## Hardware
 - Heltec CubeCell AB01
@@ -8,7 +8,7 @@
 
 ## Platinenlayout
 - Das Platinen-Design liegt im Ordner `Fritzing` in der Datei `LoRaWan_Sensor01.fzz`.
-- Direkt bestellen (Aisler): https://aisler.net/p/VXRWBTJL
+- Direkt bestellen (Aisler): https://aisler.net/p/UXGEYAMX
 - Anschluss `Sensor[1-5]` = `DHT22, DS18B20 oder Reed Kontakt`
 - Anschluss `Temp2` = `DS18B20`
 - Anschluss `Send` = `Sofort-Senden Trigger`
