@@ -1,10 +1,10 @@
-# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + Reed)
+# LoRaWan_Sensor01 V1.1 (CubeCell AB01, DS18B20 + DHT22 + Reed)
 
 ## Hardware
 - Heltec CubeCell AB01
 - DS18B20
 - DHT22
-- Reed contact
+- Reed contact (LOW = closed)
 
 ## PCB Layout
 - The PCB design is located in the `Fritzing` folder in `LoRaWan_Sensor01.fzz`.

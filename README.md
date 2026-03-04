@@ -1,10 +1,10 @@
-# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + Reed)
+# LoRaWan_Sensor01 V1.1 (CubeCell AB01, DS18B20 + DHT22 + Reed)
 
 ## Hardware
 - Heltec CubeCell AB01
 - DS18B20
 - DHT22
-- Reed Kontakt
+- Reed Kontakt (LOW = geschlossen)
 
 ## Platinenlayout
 - Das Platinen-Design liegt im Ordner `Fritzing` in der Datei `LoRaWan_Sensor01.fzz`.
