@@ -1,4 +1,4 @@
-# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + 3x Reed)
+# LoRaWan_Sensor01 V1.0 (CubeCell AB01, DS18B20 + DHT22 + 3x Reed)
 
 ## Hardware
 - 1x Heltec CubeCell AB01
