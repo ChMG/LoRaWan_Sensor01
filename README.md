@@ -4,101 +4,100 @@
 - Heltec CubeCell AB01
 - DS18B20
 - DHT22
-- Reed Kontakt (LOW = geschlossen)
+- Reed contact (LOW = closed)
 
-## Platinenlayout
-- Das Platinen-Design liegt im Ordner `Fritzing` in der Datei `LoRaWan_Sensor01.fzz`.
-- Direkt bestellen (Aisler): https://aisler.net/p/UXGEYAMX
-- Anschluss `Sensor[1-5]` = `DHT22, DS18B20 oder Reed Kontakt`
-- Anschluss `Temp2` = `DS18B20`
-- Anschluss `Send` = `Sofort-Senden Trigger`
-- Anschluss `Solar` = `Solar Modul für Batterieladung`
-- Alle Widerstände sind PullUp mit `4,7k`
+## PCB Layout
+- The PCB design is located in the `Fritzing` folder in `LoRaWan_Sensor01.fzz`.
+- Direct order (Aisler): https://aisler.net/p/UXGEYAMX
+- Connector `Sensor[1-5]` = `DHT22, DS18B20 or Reed contact`
+- Connector `Send` = `Immediate send trigger`
+- Connector `Solar` = `Solar module for battery charging`
+- All resistors are `4.7k` pull-ups
 
-![LoRaWan_Sensor01 Platine](Fritzing/LoRaWan_Sensor01.png)
+![LoRaWan_Sensor01 PCB](Fritzing/LoRaWan_Sensor01.png)
 
-## Verdrahtung (Vorschlag / Verwendet bei Platine)
-> Passe die Pins bei Bedarf im Sketch an.
+## Wiring (suggestion / used on PCB)
+> Adjust pins in the sketch if needed.
 
 - Sensor1 -> `GPIO3`
 - Sensor2 -> `GPIO2`
 - Sensor3 -> `GPIO1`
 - Sensor4 -> `GPIO5`
 - Sensor5 -> `GPIO0`
-- Sofort-Senden Trigger -> `GPIO7`
+- Immediate send trigger -> `GPIO7`
 
-Zusätzlich:
-- DS18B20: 4.7k Pullup zwischen Data und 3V3
-- DHT22: je nach Modul oft schon Pullup vorhanden, sonst 10k zwischen Data und 3V3
-- Reedkontakte jeweils zwischen GPIO und GND (im Sketch `INPUT_PULLUP`, daher aktiv LOW)
+Additionally:
+- DS18B20: 4.7k pull-up between Data and 3V3
+- DHT22: depending on module, a pull-up is often already present; otherwise use 10k between Data and 3V3
+- Reed contacts each connected between GPIO and GND (sketch uses `INPUT_PULLUP`, therefore active LOW)
 
 ## Software (PlatformIO)
-1. VS Code + PlatformIO IDE Extension installieren
-2. Projekt öffnen (Ordner mit `platformio.ini`)
-3. Alle Projektvariablen in `platformio.ini` setzen (unter `build_flags`):
-  - LoRa Keys (`LORA_DEV_EUI`, `LORA_APP_EUI`, `LORA_APP_KEY`)
-  - Sensor-Pins (`PIN_SENSOR1..5`)
-  - Sensor-Typen pro Pin (`SENSOR1_TYPE..SENSOR5_TYPE`)
+1. Install VS Code + PlatformIO IDE extension
+2. Open the project (folder containing `platformio.ini`)
+3. Set all project variables in `platformio.ini` (under `build_flags`):
+  - LoRa keys (`LORA_DEV_EUI`, `LORA_APP_EUI`, `LORA_APP_KEY`)
+  - Sensor pins (`PIN_SENSOR1..5`)
+  - Sensor type per pin (`SENSOR1_TYPE..SENSOR5_TYPE`)
   - Timing (`CFG_TX_DUTY_MS`, `REED_EVENT_COOLDOWN_MS`)
-4. LoRa-Region in `platformio.ini` setzen (z. B. `board_build.arduino.lorawan.region = EU868`)
-5. Build/Flash/Monitor starten:
+4. Set LoRa region in `platformio.ini` (e.g. `board_build.arduino.lorawan.region = EU868`)
+5. Build/Flash/Monitor:
   - Build: `pio run`
   - Upload: `pio run -t upload`
   - Monitor: `pio device monitor -b 115200`
 
-Genutzte Board-Konfiguration:
+Board configuration used:
 - `platform = heltec-cubecell`
 - `board = cubecell_board` (HTCC-AB01)
 - `framework = arduino`
 
-## WSL: USB verbinden und Upload testen
+## WSL: Connect USB and test upload
 
-Wenn das Board in WSL nicht als `/dev/ttyUSB*` oder `/dev/ttyACM*` erscheint:
+If the board does not appear in WSL as `/dev/ttyUSB*` or `/dev/ttyACM*`:
 
-1. Unter Windows (PowerShell als Administrator) Gerät an WSL anhängen:
+1. Under Windows (PowerShell as Administrator), attach the device to WSL:
   - `usbipd list`
   - `usbipd bind --busid <BUSID>`
   - `usbipd attach --wsl --busid <BUSID>`
-2. In WSL serielle Treiber laden:
+2. In WSL, load serial drivers:
   - `sudo modprobe usbserial`
   - `sudo modprobe cp210x`
-3. Port prüfen:
+3. Check port:
   - `ls /dev/ttyUSB* /dev/ttyACM*`
 
-Praktische Helfer im Projekt:
-- Upload (Auto-Port): `./upload.sh`
-- Upload (explizit): `./upload.sh LoRaWan_Sensor01 /dev/ttyUSB0`
-- Monitor (Auto-Port, 115200): `./monitor.sh`
-- Monitor (explizit): `./monitor.sh 115200 /dev/ttyUSB0`
+Useful helper scripts in this project:
+- Upload (auto port): `./upload.sh`
+- Upload (explicit): `./upload.sh LoRaWan_Sensor01 /dev/ttyUSB0`
+- Monitor (auto port, 115200): `./monitor.sh`
+- Monitor (explicit): `./monitor.sh 115200 /dev/ttyUSB0`
 
-Hinweis: Bei `Permission denied` auf `/dev/ttyUSB0` hilft testweise:
+Note: If you get `Permission denied` on `/dev/ttyUSB0`, temporary workaround:
 - `sudo chmod 666 /dev/ttyUSB0`
 
 ## Uplink Payload (Port 2)
-27 Byte insgesamt:
+27 bytes total:
 
-- Byte 0..1: Akku-Spannung als `uint16`, Einheit: `mV`, Big Endian
-- Danach 5 Sensor-Blöcke à 5 Byte (für `Sensor1..Sensor5`):
-  - `B0`: Sensor-Typ (`0=None`, `1=DHT22`, `2=DS18B20`, `3=REED`)
-  - `B1`: Statusbits pro Slot
-    - `bit0`: Temperatur gültig
-    - `bit1`: Luftfeuchte gültig
-    - `bit2`: Reed-Wert gültig
-    - `bit3`: Reed geschlossen
-  - `B2..B3`: Temperatur als `int16`, Einheit `°C * 100`, Big Endian (`INT16_MIN` wenn nicht genutzt/ungültig)
-  - `B4`: Slot-Daten
-    - DHT22: Luftfeuchte als `uint8`, `% * 2` (0.5%-Schritte), `0xFF` ungültig
-    - DS18B20: `0xFF` (reserviert)
-    - REED: `0` (offen) oder `1` (geschlossen)
+- Byte 0..1: battery voltage as `uint16`, unit: `mV`, big endian
+- Then 5 sensor blocks of 5 bytes each (for `Sensor1..Sensor5`):
+  - `B0`: sensor type (`0=None`, `1=DHT22`, `2=DS18B20`, `3=REED`)
+  - `B1`: per-slot status bits
+    - `bit0`: temperature valid
+    - `bit1`: humidity valid
+    - `bit2`: reed value valid
+    - `bit3`: reed closed
+  - `B2..B3`: temperature as `int16`, unit `°C * 100`, big endian (`INT16_MIN` when unused/invalid)
+  - `B4`: slot data
+    - DHT22: humidity as `uint8`, `% * 2` (0.5% steps), `0xFF` invalid
+    - DS18B20: `0xFF` (reserved)
+    - REED: `0` (open) or `1` (closed)
 
-## Decoder (z. B. TTN v3)
-Der vollständige Decoder liegt in [ttn/decoder.js](ttn/decoder.js).
+## Decoder (e.g. TTN v3)
+The full decoder is in [ttn/decoder.js](ttn/decoder.js).
 
-Für TTN v3 in **Payload Formatters → Uplink** einfach den Inhalt aus dieser Datei einfügen.
+For TTN v3, copy this file content into **Payload Formatters → Uplink**.
 
-Damit erhält jeder Sensor-Slot einen eigenen Block, und die Auswertung funktioniert unabhängig davon, ob z. B. alle 5 Slots DHT22, DS18B20 oder REED sind.
+This gives each sensor slot its own block, so decoding stays correct even if all 5 slots are configured as DHT22, DS18B20, or REED.
 
-Beispiel (gekürzt) in TTN Live Data:
+Example (shortened) in TTN Live Data:
 ```json
 {
   "battery_mv": 4012,
@@ -109,34 +108,34 @@ Beispiel (gekürzt) in TTN Live Data:
 }
 ```
 
-## OTAA Byte-Reihenfolge (wichtig für CubeCell)
-- `DevEUI`, `JoinEUI/AppEUI` und `AppKey` exakt wie in der TTN Console eintragen.
-- Bei Join-Problemen zuerst immer Werte zwischen TTN und `platformio.ini` 1:1 vergleichen.
+## OTAA Byte Order (important for CubeCell)
+- Enter `DevEUI`, `JoinEUI/AppEUI`, and `AppKey` exactly as shown in the TTN Console.
+- For join issues, first compare values between TTN and `platformio.ini` 1:1.
 
-## Hinweise
-- `appTxDutyCycle` ist aktuell auf 15 Minuten gesetzt.
-- Für Batterieanwendungen kannst du das Intervall erhöhen (z. B. 15–60 Minuten).
-- DS18B20 Wandlung dauert je nach Auflösung bis zu ~750 ms.
-- Reedkontakte laufen zusätzlich über Interrupt (`CHANGE`) mit Entprellung (~80 ms).
-- Bei Reed-Zustandsänderung (Öffnen/Schließen) wird ein zeitnaher Uplink ausgelöst (zusätzlich zum zyklischen Intervall).
+## Notes
+- `appTxDutyCycle` is currently set to 15 minutes.
+- For battery applications, you can increase the interval (e.g. 15–60 minutes).
+- DS18B20 conversion can take up to ~750 ms depending on resolution.
+- Reed contacts are additionally handled via interrupt (`CHANGE`) with debounce (~80 ms).
+- Reed state changes (open/close) trigger a timely uplink (in addition to the periodic interval).
 
-## Flexible Sensor-Konfiguration
-- Neue Pin-Namen:
+## Flexible Sensor Configuration
+- New pin names:
   - `PIN_SENSOR1`, `PIN_SENSOR2`, `PIN_SENSOR3`, `PIN_SENSOR4`, `PIN_SENSOR5`
-- Typ pro Sensor-Pin:
+- Type per sensor pin:
   - `SENSOR_TYPE_DHT22`
   - `SENSOR_TYPE_DS18B20`
   - `SENSOR_TYPE_REED`
-- Zuordnung erfolgt über:
+- Mapping is configured through:
   - `SENSOR1_TYPE`, `SENSOR2_TYPE`, `SENSOR3_TYPE`, `SENSOR4_TYPE`, `SENSOR5_TYPE`
-- Beispiel (aktueller Stand):
+- Example (current setup):
   - `SENSOR1_TYPE=SENSOR_TYPE_REED`
   - `SENSOR2_TYPE=SENSOR_TYPE_REED`
   - `SENSOR3_TYPE=SENSOR_TYPE_REED`
   - `SENSOR4_TYPE=SENSOR_TYPE_DS18B20`
   - `SENSOR5_TYPE=SENSOR_TYPE_DHT22`
 
-### Beispiel 1: 3x Reed + DS18B20 + DHT22
+### Example 1: 3x Reed + DS18B20 + DHT22
 ```ini
 -D PIN_SENSOR1=GPIO3
 -D PIN_SENSOR2=GPIO2
@@ -150,7 +149,7 @@ Beispiel (gekürzt) in TTN Live Data:
 -D SENSOR5_TYPE=SENSOR_TYPE_DHT22
 ```
 
-### Beispiel 2: 5x Reed only
+### Example 2: 5x Reed only
 ```ini
 -D PIN_SENSOR1=GPIO3
 -D PIN_SENSOR2=GPIO2
@@ -164,30 +163,30 @@ Beispiel (gekürzt) in TTN Live Data:
 -D SENSOR5_TYPE=SENSOR_TYPE_REED
 ```
 
-## Finale Produktionswerte (Checkliste)
-- LoRaWAN: `OTAA`, Region `EU868`, Class `A`, Uplink `UNCONFIRMED`
-- Uplink Intervall: `CFG_TX_DUTY_MS=900000` (15 Minuten)
-- Sensor-/Eingangspins:
+## Final Production Values (Checklist)
+- LoRaWAN: `OTAA`, region `EU868`, class `A`, uplink `UNCONFIRMED`
+- Uplink interval: `CFG_TX_DUTY_MS=900000` (15 minutes)
+- Sensor/input pins:
   - `PIN_SENSOR1=GPIO3` (`SENSOR_TYPE_REED`)
   - `PIN_SENSOR2=GPIO2` (`SENSOR_TYPE_REED`)
   - `PIN_SENSOR3=GPIO1` (`SENSOR_TYPE_REED`)
   - `PIN_SENSOR4=GPIO5` (`SENSOR_TYPE_DS18B20`)
   - `PIN_SENSOR5=GPIO0` (`SENSOR_TYPE_DHT22`)
   - `PIN_IMMEDIATE_TX=GPIO7`
-- DS18B20 benötigt Pullup `4.7k` zwischen Data und `3V3`
-- WSL Upload/Monitor:
+- DS18B20 requires `4.7k` pull-up between Data and `3V3`
+- WSL upload/monitor:
   - Upload: `./upload.sh`
   - Monitor: `./monitor.sh`
 
-## Troubleshooting (3 Checks)
-1. Join klappt nicht:
-  - TTN Credentials 1:1 mit `platformio.ini` vergleichen (`DevEUI`, `JoinEUI/AppEUI`, `AppKey`)
-  - Region/Frequency Plan: `EU868`
-2. DS18B20 zeigt `nan`:
-  - `PIN_SENSORx` und `SENSORx_TYPE=SENSOR_TYPE_DS18B20` prüfen
-  - `4.7k` Pullup zwischen Data und `3V3`
-  - gemeinsame Masse sicherstellen
-3. Reed-Event sendet nicht:
-  - korrekte Pinzuordnung (`PIN_SENSORx` mit `SENSOR_TYPE_REED`) prüfen
-  - im Monitor auf `Reed ... detected, new mask` achten
-  - in TTN Live Data auf geänderte `sensor_x.closed` Felder bei den REED-Slots prüfen
+## Troubleshooting (3 checks)
+1. Join does not work:
+  - Compare TTN credentials 1:1 with `platformio.ini` (`DevEUI`, `JoinEUI/AppEUI`, `AppKey`)
+  - Region/Frequency plan: `EU868`
+2. DS18B20 shows `nan`:
+  - Check `PIN_SENSORx` and `SENSORx_TYPE=SENSOR_TYPE_DS18B20`
+  - Check `4.7k` pull-up between Data and `3V3`
+  - Ensure common ground
+3. Reed event not sending:
+  - Check correct pin mapping (`PIN_SENSORx` with `SENSOR_TYPE_REED`)
+  - Watch monitor for `Reed ... detected, new mask`
+  - Check TTN Live Data for changed `sensor_x.closed` fields on REED slots
