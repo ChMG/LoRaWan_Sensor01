@@ -44,24 +44,60 @@
 #define CFG_CONFIRMED_TRIALS 4
 #endif
 
-#ifndef PIN_DS18B20
-#define PIN_DS18B20 GPIO4
+#ifndef SENSOR_TYPE_NONE
+#define SENSOR_TYPE_NONE 0
 #endif
 
-#ifndef PIN_DHT22
-#define PIN_DHT22 GPIO0
+#ifndef SENSOR_TYPE_DHT22
+#define SENSOR_TYPE_DHT22 1
 #endif
 
-#ifndef PIN_REED_1
-#define PIN_REED_1 GPIO3
+#ifndef SENSOR_TYPE_DS18B20
+#define SENSOR_TYPE_DS18B20 2
 #endif
 
-#ifndef PIN_REED_2
-#define PIN_REED_2 GPIO2
+#ifndef SENSOR_TYPE_REED
+#define SENSOR_TYPE_REED 3
 #endif
 
-#ifndef PIN_REED_3
-#define PIN_REED_3 GPIO1
+#ifndef PIN_SENSOR1
+#define PIN_SENSOR1 GPIO3
+#endif
+
+#ifndef PIN_SENSOR2
+#define PIN_SENSOR2 GPIO2
+#endif
+
+#ifndef PIN_SENSOR3
+#define PIN_SENSOR3 GPIO1
+#endif
+
+#ifndef PIN_SENSOR4
+#define PIN_SENSOR4 GPIO5
+#endif
+
+#ifndef PIN_SENSOR5
+#define PIN_SENSOR5 GPIO0
+#endif
+
+#ifndef SENSOR1_TYPE
+#define SENSOR1_TYPE SENSOR_TYPE_REED
+#endif
+
+#ifndef SENSOR2_TYPE
+#define SENSOR2_TYPE SENSOR_TYPE_REED
+#endif
+
+#ifndef SENSOR3_TYPE
+#define SENSOR3_TYPE SENSOR_TYPE_REED
+#endif
+
+#ifndef SENSOR4_TYPE
+#define SENSOR4_TYPE SENSOR_TYPE_DS18B20
+#endif
+
+#ifndef SENSOR5_TYPE
+#define SENSOR5_TYPE SENSOR_TYPE_DHT22
 #endif
 
 #ifndef PIN_IMMEDIATE_TX
@@ -88,7 +124,7 @@
   CubeCell AB01 LoRaWAN Sensor
   - DS18B20 temperature
   - DHT22 temperature + humidity
-  - 3x reed contacts
+  - reed contacts
 
   Required libraries:
   - Heltec CubeCell Framework (Boardpaket)
@@ -125,12 +161,37 @@ uint8_t confirmedNbTrials = CFG_CONFIRMED_TRIALS;
 
 #define DHTTYPE DHT22
 
-OneWire oneWire(PIN_DS18B20);
-DallasTemperature ds18b20(&oneWire);
-DHT dht(PIN_DHT22, DHTTYPE);
+static const uint8_t SENSOR_SLOT_COUNT = 5;
+static const uint8_t SENSOR_BLOCK_SIZE = 5;
+static const uint8_t PAYLOAD_HEADER_SIZE = 2;
 
-static DeviceAddress ds18b20Address;
-static bool ds18b20Present = false;
+static const uint8_t SENSOR_PINS[SENSOR_SLOT_COUNT] = {
+  PIN_SENSOR1,
+  PIN_SENSOR2,
+  PIN_SENSOR3,
+  PIN_SENSOR4,
+  PIN_SENSOR5
+};
+
+static const uint8_t SENSOR_TYPES[SENSOR_SLOT_COUNT] = {
+  SENSOR1_TYPE,
+  SENSOR2_TYPE,
+  SENSOR3_TYPE,
+  SENSOR4_TYPE,
+  SENSOR5_TYPE
+};
+
+struct SensorSlotRuntime {
+  OneWire *oneWire = nullptr;
+  DallasTemperature *ds18b20 = nullptr;
+  DHT *dht = nullptr;
+  DeviceAddress dsAddress;
+  bool dsPresent = false;
+};
+
+static SensorSlotRuntime sensorSlots[SENSOR_SLOT_COUNT];
+static uint8_t reedSensorSlots[SENSOR_SLOT_COUNT];
+static uint8_t reedCount = 0;
 
 static volatile bool reedInterruptFired = false;
 static volatile bool immediateTxInterruptFired = false;
@@ -153,18 +214,48 @@ extern bool autoLPM;
 void onReedInterrupt();
 void onImmediateTxInterrupt();
 
+static void initSensorRouting() {
+  reedCount = 0;
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    sensorSlots[slot].oneWire = nullptr;
+    sensorSlots[slot].ds18b20 = nullptr;
+    sensorSlots[slot].dht = nullptr;
+    sensorSlots[slot].dsPresent = false;
+
+    uint8_t type = SENSOR_TYPES[slot];
+    uint8_t pin = SENSOR_PINS[slot];
+
+    if (type == SENSOR_TYPE_DHT22) {
+      sensorSlots[slot].dht = new DHT(pin, DHTTYPE);
+      continue;
+    }
+
+    if (type == SENSOR_TYPE_DS18B20) {
+      sensorSlots[slot].oneWire = new OneWire(pin);
+      sensorSlots[slot].ds18b20 = new DallasTemperature(sensorSlots[slot].oneWire);
+      continue;
+    }
+
+    if (type == SENSOR_TYPE_REED && reedCount < SENSOR_SLOT_COUNT) {
+      reedSensorSlots[reedCount++] = slot;
+    }
+  }
+}
+
 static bool isNetworkJoined() {
   return IsLoRaMacNetworkJoined;
 }
 
 static void enableReedInterruptsIfNeeded() {
-  if (reedInterruptsEnabled) {
+  if (reedInterruptsEnabled || reedCount == 0) {
     return;
   }
 
-  attachInterrupt(PIN_REED_1, onReedInterrupt, CHANGE);
-  attachInterrupt(PIN_REED_2, onReedInterrupt, CHANGE);
-  attachInterrupt(PIN_REED_3, onReedInterrupt, CHANGE);
+  for (uint8_t i = 0; i < reedCount; i++) {
+    uint8_t slot = reedSensorSlots[i];
+    attachInterrupt(SENSOR_PINS[slot], onReedInterrupt, CHANGE);
+  }
   reedInterruptsEnabled = true;
 }
 
@@ -191,13 +282,23 @@ static void printDs18b20Address(const DeviceAddress address) {
   }
 }
 
-static void detectDs18b20() {
-  uint8_t deviceCount = ds18b20.getDeviceCount();
-  bool found = ds18b20.getAddress(ds18b20Address, 0);
-  ds18b20Present = found;
+static void detectDs18b20(uint8_t slot) {
+  if (slot >= SENSOR_SLOT_COUNT) {
+    return;
+  }
+
+  SensorSlotRuntime &runtime = sensorSlots[slot];
+  if (runtime.ds18b20 == nullptr) {
+    runtime.dsPresent = false;
+    return;
+  }
+
+  uint8_t deviceCount = runtime.ds18b20->getDeviceCount();
+  bool found = runtime.ds18b20->getAddress(runtime.dsAddress, 0);
+  runtime.dsPresent = found;
 
   if (found) {
-    ds18b20.setResolution(ds18b20Address, 12);
+    runtime.ds18b20->setResolution(runtime.dsAddress, 12);
   } else {
     (void)deviceCount;
   }
@@ -238,17 +339,21 @@ static uint16_t readBatteryMillivolts() {
 static uint8_t readReedBitmask() {
   uint8_t mask = 0;
 
-  if (digitalRead(PIN_REED_1) == LOW) {
-    mask |= (1 << 0);
-  }
-  if (digitalRead(PIN_REED_2) == LOW) {
-    mask |= (1 << 1);
-  }
-  if (digitalRead(PIN_REED_3) == LOW) {
-    mask |= (1 << 2);
+  for (uint8_t i = 0; i < reedCount; i++) {
+    uint8_t slot = reedSensorSlots[i];
+    if (digitalRead(SENSOR_PINS[slot]) == LOW) {
+      mask |= (1 << slot);
+    }
   }
 
   return mask;
+}
+
+static bool readReedStateForSlot(uint8_t slot) {
+  if (slot >= SENSOR_SLOT_COUNT || SENSOR_TYPES[slot] != SENSOR_TYPE_REED) {
+    return false;
+  }
+  return digitalRead(SENSOR_PINS[slot]) == LOW;
 }
 
 static void handleReedPollingFallback() {
@@ -327,72 +432,90 @@ static void handleImmediateTxInterruptEvent() {
 }
 
 static void buildPayload() {
-  if (!ds18b20Present) {
-    detectDs18b20();
-  }
-
-  float tempDs = NAN;
-  if (ds18b20Present) {
-    ds18b20.requestTemperaturesByAddress(ds18b20Address);
-    tempDs = ds18b20.getTempC(ds18b20Address);
-
-    if (tempDs <= -126.0f || tempDs >= 125.0f || tempDs == DEVICE_DISCONNECTED_C) {
-      delay(120);
-      ds18b20.requestTemperaturesByAddress(ds18b20Address);
-      tempDs = ds18b20.getTempC(ds18b20Address);
-    }
-
-    if (tempDs <= -126.0f || tempDs >= 125.0f || tempDs == DEVICE_DISCONNECTED_C) {
-      Serial.println("DS18B20 read failed, trying re-detect...");
-      ds18b20Present = false;
-      tempDs = NAN;
-    }
-  }
-
-  float tempDht = NAN;
-  float humidity = NAN;
-  for (uint8_t attempt = 0; attempt < 3; attempt++) {
-    tempDht = dht.readTemperature();
-    humidity = dht.readHumidity();
-    if (!isnan(tempDht) && !isnan(humidity)) {
-      break;
-    }
-    delay(120);
-  }
-
-  int16_t tempDsEnc = encodeTempC(tempDs);
-  int16_t tempDhtEnc = encodeTempC(tempDht);
-  uint8_t humEnc = encodeHumidity(humidity);
   uint8_t reedMask = readReedBitmask();
   uint16_t battMv = readBatteryMillivolts();
 
-  uint8_t status = 0;
-  if (!isnan(tempDs)) {
-    status |= (1 << 0);
-  }
-  if (!isnan(tempDht)) {
-    status |= (1 << 1);
-  }
-  if (!isnan(humidity)) {
-    status |= (1 << 2);
-  }
-  if (battMv > 0) {
-    status |= (1 << 3);
+  appData[0] = (uint8_t)(battMv >> 8);
+  appData[1] = (uint8_t)(battMv & 0xFF);
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    const uint8_t type = SENSOR_TYPES[slot];
+    const uint8_t base = PAYLOAD_HEADER_SIZE + slot * SENSOR_BLOCK_SIZE;
+
+    int16_t tempEnc = INT16_MIN;
+    uint8_t dataEnc = 0xFF;
+    uint8_t status = 0;
+
+    if (type == SENSOR_TYPE_DS18B20) {
+      SensorSlotRuntime &runtime = sensorSlots[slot];
+      if (!runtime.dsPresent) {
+        detectDs18b20(slot);
+      }
+
+      float temp = NAN;
+      if (runtime.dsPresent && runtime.ds18b20 != nullptr) {
+        runtime.ds18b20->requestTemperaturesByAddress(runtime.dsAddress);
+        temp = runtime.ds18b20->getTempC(runtime.dsAddress);
+
+        if (temp <= -126.0f || temp >= 125.0f || temp == DEVICE_DISCONNECTED_C) {
+          delay(120);
+          runtime.ds18b20->requestTemperaturesByAddress(runtime.dsAddress);
+          temp = runtime.ds18b20->getTempC(runtime.dsAddress);
+        }
+
+        if (temp <= -126.0f || temp >= 125.0f || temp == DEVICE_DISCONNECTED_C) {
+          runtime.dsPresent = false;
+          temp = NAN;
+        }
+      }
+
+      tempEnc = encodeTempC(temp);
+      if (!isnan(temp)) {
+        status |= (1 << 0);
+      }
+    } else if (type == SENSOR_TYPE_DHT22) {
+      SensorSlotRuntime &runtime = sensorSlots[slot];
+      float temp = NAN;
+      float humidity = NAN;
+
+      if (runtime.dht != nullptr) {
+        for (uint8_t attempt = 0; attempt < 3; attempt++) {
+          temp = runtime.dht->readTemperature();
+          humidity = runtime.dht->readHumidity();
+          if (!isnan(temp) && !isnan(humidity)) {
+            break;
+          }
+          delay(120);
+        }
+      }
+
+      tempEnc = encodeTempC(temp);
+      dataEnc = encodeHumidity(humidity);
+      if (!isnan(temp)) {
+        status |= (1 << 0);
+      }
+      if (!isnan(humidity)) {
+        status |= (1 << 1);
+      }
+    } else if (type == SENSOR_TYPE_REED) {
+      bool reedClosed = readReedStateForSlot(slot);
+      dataEnc = reedClosed ? 1 : 0;
+      status |= (1 << 2);
+      if (reedClosed) {
+        status |= (1 << 3);
+      }
+    }
+
+    appData[base + 0] = type;
+    appData[base + 1] = status;
+    appData[base + 2] = (uint8_t)(tempEnc >> 8);
+    appData[base + 3] = (uint8_t)(tempEnc & 0xFF);
+    appData[base + 4] = dataEnc;
   }
 
-  appData[0] = (uint8_t)(tempDsEnc >> 8);
-  appData[1] = (uint8_t)(tempDsEnc & 0xFF);
-  appData[2] = (uint8_t)(tempDhtEnc >> 8);
-  appData[3] = (uint8_t)(tempDhtEnc & 0xFF);
-  appData[4] = humEnc;
-  appData[5] = reedMask;
-  appData[6] = status;
-  appData[7] = (uint8_t)(battMv >> 8);
-  appData[8] = (uint8_t)(battMv & 0xFF);
-  appDataSize = 9;
+  appDataSize = PAYLOAD_HEADER_SIZE + SENSOR_SLOT_COUNT * SENSOR_BLOCK_SIZE;
 
-  Serial.printf("DS18B20: %.2f C, DHT22: %.2f C, RH: %.2f %%, ReedMask: 0x%02X, VBAT: %u mV\n",
-                tempDs, tempDht, humidity, reedMask, battMv);
+  Serial.printf("Payload built, ReedMask: 0x%02X, VBAT: %u mV\n", reedMask, battMv);
 }
 
 void prepareTxFrame(uint8_t port) {
@@ -404,16 +527,26 @@ void setup() {
   Serial.begin(115200);
   autoLPM = false;
 
-  pinMode(PIN_REED_1, INPUT_PULLUP);
-  pinMode(PIN_REED_2, INPUT_PULLUP);
-  pinMode(PIN_REED_3, INPUT_PULLUP);
+  initSensorRouting();
+
+  for (uint8_t i = 0; i < reedCount; i++) {
+    uint8_t slot = reedSensorSlots[i];
+    pinMode(SENSOR_PINS[slot], INPUT_PULLUP);
+  }
   pinMode(PIN_IMMEDIATE_TX, INPUT_PULLUP);
 
   lastReedMask = readReedBitmask();
 
-  ds18b20.begin();
-  detectDs18b20();
-  dht.begin();
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    SensorSlotRuntime &runtime = sensorSlots[slot];
+    if (runtime.ds18b20 != nullptr) {
+      runtime.ds18b20->begin();
+      detectDs18b20(slot);
+    }
+    if (runtime.dht != nullptr) {
+      runtime.dht->begin();
+    }
+  }
 
   deviceState = DEVICE_STATE_INIT;
   LoRaWAN.ifskipjoin();

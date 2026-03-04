@@ -1,19 +1,16 @@
-# LoRaWan_Sensor01 (CubeCell AB01, DS18B20 + DHT22 + 3x Reed)
+# LoRaWan_Sensor01 V1.1 (CubeCell AB01, DS18B20 + DHT22 + Reed)
 
 ## Hardware
-- 1x Heltec CubeCell AB01
-- 1x DS18B20
-- 1x DHT22
-- 3x Reed Kontakt
+- Heltec CubeCell AB01
+- DS18B20
+- DHT22
+- Reed Kontakt (LOW = geschlossen)
 
 ## Platinenlayout
 - Das Platinen-Design liegt im Ordner `Fritzing` in der Datei `LoRaWan_Sensor01.fzz`.
-- Direkt bestellen (Aisler): https://aisler.net/p/VXRWBTJL
-- Anschluss `Temp1` = `DHT22`
+- Direkt bestellen (Aisler): https://aisler.net/p/UXGEYAMX
+- Anschluss `Sensor[1-5]` = `DHT22, DS18B20 oder Reed Kontakt`
 - Anschluss `Temp2` = `DS18B20`
-- Anschluss `SW1` = `Reed 1`
-- Anschluss `SW2` = `Reed 2`
-- Anschluss `SW3` = `Reed 3`
 - Anschluss `Send` = `Sofort-Senden Trigger`
 - Anschluss `Solar` = `Solar Modul für Batterieladung`
 - Alle Widerstände sind PullUp mit `4,7k`
@@ -23,11 +20,11 @@
 ## Verdrahtung (Vorschlag / Verwendet bei Platine)
 > Passe die Pins bei Bedarf im Sketch an.
 
-- DS18B20 Data -> `GPIO5`
-- DHT22 Data -> `GPIO0`
-- Reed 1 -> `GPIO3`
-- Reed 2 -> `GPIO2`
-- Reed 3 -> `GPIO1`
+- Sensor1 -> `GPIO3`
+- Sensor2 -> `GPIO2`
+- Sensor3 -> `GPIO1`
+- Sensor4 -> `GPIO5`
+- Sensor5 -> `GPIO0`
 - Sofort-Senden Trigger -> `GPIO7`
 
 Zusätzlich:
@@ -40,7 +37,8 @@ Zusätzlich:
 2. Projekt öffnen (Ordner mit `platformio.ini`)
 3. Alle Projektvariablen in `platformio.ini` setzen (unter `build_flags`):
   - LoRa Keys (`LORA_DEV_EUI`, `LORA_APP_EUI`, `LORA_APP_KEY`)
-  - Pins (`PIN_DHT22`, `PIN_DS18B20`, `PIN_REED_1..3`)
+  - Sensor-Pins (`PIN_SENSOR1..5`)
+  - Sensor-Typen pro Pin (`SENSOR1_TYPE..SENSOR5_TYPE`)
   - Timing (`CFG_TX_DUTY_MS`, `REED_EVENT_COOLDOWN_MS`)
 4. LoRa-Region in `platformio.ini` setzen (z. B. `board_build.arduino.lorawan.region = EU868`)
 5. Build/Flash/Monitor starten:
@@ -77,53 +75,37 @@ Hinweis: Bei `Permission denied` auf `/dev/ttyUSB0` hilft testweise:
 - `sudo chmod 666 /dev/ttyUSB0`
 
 ## Uplink Payload (Port 2)
-9 Byte insgesamt:
+27 Byte insgesamt:
 
-- Byte 0..1: DS18B20 Temperatur als `int16`, Einheit: `°C * 100`, Big Endian
-- Byte 2..3: DHT22 Temperatur als `int16`, Einheit: `°C * 100`, Big Endian
-- Byte 4: Luftfeuchte als `uint8`, Einheit: `% * 2` (0.5%-Schritte), `0xFF` = ungültig
-- Byte 5: Reed-Bitmaske (`bit0=Reed1`, `bit1=Reed2`, `bit2=Reed3`, 1 = geschlossen)
-- Byte 6: Statusbits (`bit0=DS gültig`, `bit1=DHT Temp gültig`, `bit2=DHT RH gültig`, `bit3=VBAT gültig`)
-- Byte 7..8: Akku-Spannung als `uint16`, Einheit: `mV`, Big Endian
+- Byte 0..1: Akku-Spannung als `uint16`, Einheit: `mV`, Big Endian
+- Danach 5 Sensor-Blöcke à 5 Byte (für `Sensor1..Sensor5`):
+  - `B0`: Sensor-Typ (`0=None`, `1=DHT22`, `2=DS18B20`, `3=REED`)
+  - `B1`: Statusbits pro Slot
+    - `bit0`: Temperatur gültig
+    - `bit1`: Luftfeuchte gültig
+    - `bit2`: Reed-Wert gültig
+    - `bit3`: Reed geschlossen
+  - `B2..B3`: Temperatur als `int16`, Einheit `°C * 100`, Big Endian (`INT16_MIN` wenn nicht genutzt/ungültig)
+  - `B4`: Slot-Daten
+    - DHT22: Luftfeuchte als `uint8`, `% * 2` (0.5%-Schritte), `0xFF` ungültig
+    - DS18B20: `0xFF` (reserviert)
+    - REED: `0` (offen) oder `1` (geschlossen)
 
 ## Decoder (z. B. TTN v3)
-```js
-function decodeUplink(input) {
-  const b = input.bytes;
-  if (b.length < 9) {
-    return { errors: ["Payload too short"] };
-  }
+Der vollständige Decoder liegt in [ttn/decoder.js](ttn/decoder.js).
 
-  const i16 = (msb, lsb) => {
-    let v = (msb << 8) | lsb;
-    if (v & 0x8000) v -= 0x10000;
-    return v;
-  };
+Für TTN v3 in **Payload Formatters → Uplink** einfach den Inhalt aus dieser Datei einfügen.
 
-  const dsRaw = i16(b[0], b[1]);
-  const dhtRaw = i16(b[2], b[3]);
-  const humRaw = b[4];
-  const reed = b[5];
-  const status = b[6];
-  const battMv = (b[7] << 8) | b[8];
+Damit erhält jeder Sensor-Slot einen eigenen Block, und die Auswertung funktioniert unabhängig davon, ob z. B. alle 5 Slots DHT22, DS18B20 oder REED sind.
 
-  const dsValid = !!(status & 0x01);
-  const dhtTempValid = !!(status & 0x02);
-  const dhtHumValid = !!(status & 0x04);
-  const battValid = !!(status & 0x08);
-
-  return {
-    data: {
-      temperature_ds18b20_c: dsValid ? dsRaw / 100 : null,
-      temperature_dht22_c: dhtTempValid ? dhtRaw / 100 : null,
-      humidity_dht22_pct: dhtHumValid && humRaw !== 0xFF ? humRaw / 2 : null,
-      battery_mv: battValid ? battMv : null,
-      reed1_closed: !!(reed & 0x01),
-      reed2_closed: !!(reed & 0x02),
-      reed3_closed: !!(reed & 0x04),
-      raw: { reed_mask: reed, status }
-    }
-  };
+Beispiel (gekürzt) in TTN Live Data:
+```json
+{
+  "battery_mv": 4012,
+  "sensor_1": { "type_name": "REED", "closed": true },
+  "sensor_2": { "type_name": "REED", "closed": false },
+  "sensor_4": { "type_name": "DS18B20", "temperature_c": 21.75 },
+  "sensor_5": { "type_name": "DHT22", "temperature_c": 22.1, "humidity_pct": 56.5 }
 }
 ```
 
@@ -138,15 +120,59 @@ function decodeUplink(input) {
 - Reedkontakte laufen zusätzlich über Interrupt (`CHANGE`) mit Entprellung (~80 ms).
 - Bei Reed-Zustandsänderung (Öffnen/Schließen) wird ein zeitnaher Uplink ausgelöst (zusätzlich zum zyklischen Intervall).
 
+## Flexible Sensor-Konfiguration
+- Neue Pin-Namen:
+  - `PIN_SENSOR1`, `PIN_SENSOR2`, `PIN_SENSOR3`, `PIN_SENSOR4`, `PIN_SENSOR5`
+- Typ pro Sensor-Pin:
+  - `SENSOR_TYPE_DHT22`
+  - `SENSOR_TYPE_DS18B20`
+  - `SENSOR_TYPE_REED`
+- Zuordnung erfolgt über:
+  - `SENSOR1_TYPE`, `SENSOR2_TYPE`, `SENSOR3_TYPE`, `SENSOR4_TYPE`, `SENSOR5_TYPE`
+- Beispiel (aktueller Stand):
+  - `SENSOR1_TYPE=SENSOR_TYPE_REED`
+  - `SENSOR2_TYPE=SENSOR_TYPE_REED`
+  - `SENSOR3_TYPE=SENSOR_TYPE_REED`
+  - `SENSOR4_TYPE=SENSOR_TYPE_DS18B20`
+  - `SENSOR5_TYPE=SENSOR_TYPE_DHT22`
+
+### Beispiel 1: 3x Reed + DS18B20 + DHT22
+```ini
+-D PIN_SENSOR1=GPIO3
+-D PIN_SENSOR2=GPIO2
+-D PIN_SENSOR3=GPIO1
+-D PIN_SENSOR4=GPIO5
+-D PIN_SENSOR5=GPIO0
+-D SENSOR1_TYPE=SENSOR_TYPE_REED
+-D SENSOR2_TYPE=SENSOR_TYPE_REED
+-D SENSOR3_TYPE=SENSOR_TYPE_REED
+-D SENSOR4_TYPE=SENSOR_TYPE_DS18B20
+-D SENSOR5_TYPE=SENSOR_TYPE_DHT22
+```
+
+### Beispiel 2: 5x Reed only
+```ini
+-D PIN_SENSOR1=GPIO3
+-D PIN_SENSOR2=GPIO2
+-D PIN_SENSOR3=GPIO1
+-D PIN_SENSOR4=GPIO5
+-D PIN_SENSOR5=GPIO0
+-D SENSOR1_TYPE=SENSOR_TYPE_REED
+-D SENSOR2_TYPE=SENSOR_TYPE_REED
+-D SENSOR3_TYPE=SENSOR_TYPE_REED
+-D SENSOR4_TYPE=SENSOR_TYPE_REED
+-D SENSOR5_TYPE=SENSOR_TYPE_REED
+```
+
 ## Finale Produktionswerte (Checkliste)
 - LoRaWAN: `OTAA`, Region `EU868`, Class `A`, Uplink `UNCONFIRMED`
 - Uplink Intervall: `CFG_TX_DUTY_MS=900000` (15 Minuten)
 - Sensor-/Eingangspins:
-  - `PIN_DS18B20=GPIO5`
-  - `PIN_DHT22=GPIO0`
-  - `PIN_REED_1=GPIO3`
-  - `PIN_REED_2=GPIO2`
-  - `PIN_REED_3=GPIO1`
+  - `PIN_SENSOR1=GPIO3` (`SENSOR_TYPE_REED`)
+  - `PIN_SENSOR2=GPIO2` (`SENSOR_TYPE_REED`)
+  - `PIN_SENSOR3=GPIO1` (`SENSOR_TYPE_REED`)
+  - `PIN_SENSOR4=GPIO5` (`SENSOR_TYPE_DS18B20`)
+  - `PIN_SENSOR5=GPIO0` (`SENSOR_TYPE_DHT22`)
   - `PIN_IMMEDIATE_TX=GPIO7`
 - DS18B20 benötigt Pullup `4.7k` zwischen Data und `3V3`
 - WSL Upload/Monitor:
@@ -158,10 +184,10 @@ function decodeUplink(input) {
   - TTN Credentials 1:1 mit `platformio.ini` vergleichen (`DevEUI`, `JoinEUI/AppEUI`, `AppKey`)
   - Region/Frequency Plan: `EU868`
 2. DS18B20 zeigt `nan`:
-  - `PIN_DS18B20` prüfen
+  - `PIN_SENSORx` und `SENSORx_TYPE=SENSOR_TYPE_DS18B20` prüfen
   - `4.7k` Pullup zwischen Data und `3V3`
   - gemeinsame Masse sicherstellen
 3. Reed-Event sendet nicht:
-  - korrekte Pinzuordnung (`PIN_REED_1..3`) prüfen
+  - korrekte Pinzuordnung (`PIN_SENSORx` mit `SENSOR_TYPE_REED`) prüfen
   - im Monitor auf `Reed ... detected, new mask` achten
-  - in TTN Live Data auf Uplink mit geändertem `reed_mask` prüfen
+  - in TTN Live Data auf geänderte `sensor_x.closed` Felder bei den REED-Slots prüfen
