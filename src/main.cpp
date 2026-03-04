@@ -1,5 +1,6 @@
 #include "LoRaWan_APP.h"
 #include "Arduino.h"
+#include <EEPROM.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <DHT.h>
@@ -43,6 +44,12 @@
 #ifndef CFG_CONFIRMED_TRIALS
 #define CFG_CONFIRMED_TRIALS 4
 #endif
+
+#ifndef CFG_CONFIG_PORT
+#define CFG_CONFIG_PORT 100
+#endif
+
+static const uint8_t CMD_SET_SENSOR_TYPES = 0x01;
 
 #ifndef SENSOR_TYPE_NONE
 #define SENSOR_TYPE_NONE 0
@@ -93,11 +100,11 @@
 #endif
 
 #ifndef SENSOR4_TYPE
-#define SENSOR4_TYPE SENSOR_TYPE_DS18B20
+#define SENSOR4_TYPE SENSOR_TYPE_REED
 #endif
 
 #ifndef SENSOR5_TYPE
-#define SENSOR5_TYPE SENSOR_TYPE_DHT22
+#define SENSOR5_TYPE SENSOR_TYPE_REED
 #endif
 
 #ifndef PIN_IMMEDIATE_TX
@@ -164,6 +171,15 @@ uint8_t confirmedNbTrials = CFG_CONFIRMED_TRIALS;
 static const uint8_t SENSOR_SLOT_COUNT = 5;
 static const uint8_t SENSOR_BLOCK_SIZE = 5;
 static const uint8_t PAYLOAD_HEADER_SIZE = 2;
+static const uint16_t EEPROM_STORAGE_SIZE = 64;
+static const uint8_t SENSOR_CFG_MAGIC_0 = 0x53;
+static const uint8_t SENSOR_CFG_MAGIC_1 = 0x54;
+static const uint8_t SENSOR_CFG_LAYOUT_VERSION = 1;
+static const uint8_t SENSOR_CFG_OFFSET_MAGIC_0 = 0;
+static const uint8_t SENSOR_CFG_OFFSET_MAGIC_1 = 1;
+static const uint8_t SENSOR_CFG_OFFSET_VERSION = 2;
+static const uint8_t SENSOR_CFG_OFFSET_TYPES = 3;
+static const uint8_t SENSOR_CFG_OFFSET_CHECKSUM = SENSOR_CFG_OFFSET_TYPES + SENSOR_SLOT_COUNT;
 
 static const uint8_t SENSOR_PINS[SENSOR_SLOT_COUNT] = {
   PIN_SENSOR1,
@@ -173,12 +189,20 @@ static const uint8_t SENSOR_PINS[SENSOR_SLOT_COUNT] = {
   PIN_SENSOR5
 };
 
-static const uint8_t SENSOR_TYPES[SENSOR_SLOT_COUNT] = {
+static const uint8_t SENSOR_TYPES_DEFAULT[SENSOR_SLOT_COUNT] = {
   SENSOR1_TYPE,
   SENSOR2_TYPE,
   SENSOR3_TYPE,
   SENSOR4_TYPE,
   SENSOR5_TYPE
+};
+
+static uint8_t sensorTypesActive[SENSOR_SLOT_COUNT] = {
+  SENSOR_TYPE_REED,
+  SENSOR_TYPE_REED,
+  SENSOR_TYPE_REED,
+  SENSOR_TYPE_REED,
+  SENSOR_TYPE_REED
 };
 
 struct SensorSlotRuntime {
@@ -213,17 +237,121 @@ extern bool autoLPM;
 
 void onReedInterrupt();
 void onImmediateTxInterrupt();
+static void detectDs18b20(uint8_t slot);
+static uint8_t readReedBitmask();
+
+static bool isValidSensorType(uint8_t type) {
+  return type == SENSOR_TYPE_NONE ||
+         type == SENSOR_TYPE_DHT22 ||
+         type == SENSOR_TYPE_DS18B20 ||
+         type == SENSOR_TYPE_REED;
+}
+
+static void loadDefaultSensorTypes() {
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    sensorTypesActive[slot] = isValidSensorType(SENSOR_TYPES_DEFAULT[slot])
+                                ? SENSOR_TYPES_DEFAULT[slot]
+                                : SENSOR_TYPE_REED;
+  }
+}
+
+static uint8_t computeTypesChecksum(const uint8_t *types) {
+  uint8_t checksum = SENSOR_CFG_LAYOUT_VERSION ^ 0xA5;
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    checksum ^= (uint8_t)(types[slot] + (slot * 17));
+  }
+  return checksum;
+}
+
+static bool loadSensorTypesFromStorage() {
+  uint8_t magic0 = EEPROM.read(SENSOR_CFG_OFFSET_MAGIC_0);
+  uint8_t magic1 = EEPROM.read(SENSOR_CFG_OFFSET_MAGIC_1);
+  uint8_t version = EEPROM.read(SENSOR_CFG_OFFSET_VERSION);
+
+  if (magic0 != SENSOR_CFG_MAGIC_0 || magic1 != SENSOR_CFG_MAGIC_1 || version != SENSOR_CFG_LAYOUT_VERSION) {
+    return false;
+  }
+
+  uint8_t loadedTypes[SENSOR_SLOT_COUNT];
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    loadedTypes[slot] = EEPROM.read(SENSOR_CFG_OFFSET_TYPES + slot);
+    if (!isValidSensorType(loadedTypes[slot])) {
+      return false;
+    }
+  }
+
+  uint8_t storedChecksum = EEPROM.read(SENSOR_CFG_OFFSET_CHECKSUM);
+  uint8_t expectedChecksum = computeTypesChecksum(loadedTypes);
+  if (storedChecksum != expectedChecksum) {
+    return false;
+  }
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    sensorTypesActive[slot] = loadedTypes[slot];
+  }
+  return true;
+}
+
+static void saveSensorTypesToStorage() {
+  EEPROM.write(SENSOR_CFG_OFFSET_MAGIC_0, SENSOR_CFG_MAGIC_0);
+  EEPROM.write(SENSOR_CFG_OFFSET_MAGIC_1, SENSOR_CFG_MAGIC_1);
+  EEPROM.write(SENSOR_CFG_OFFSET_VERSION, SENSOR_CFG_LAYOUT_VERSION);
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    EEPROM.write(SENSOR_CFG_OFFSET_TYPES + slot, sensorTypesActive[slot]);
+  }
+
+  EEPROM.write(SENSOR_CFG_OFFSET_CHECKSUM, computeTypesChecksum(sensorTypesActive));
+  EEPROM.commit();
+}
+
+static void clearSlotRuntime(uint8_t slot) {
+  SensorSlotRuntime &runtime = sensorSlots[slot];
+  if (runtime.ds18b20 != nullptr) {
+    delete runtime.ds18b20;
+    runtime.ds18b20 = nullptr;
+  }
+  if (runtime.oneWire != nullptr) {
+    delete runtime.oneWire;
+    runtime.oneWire = nullptr;
+  }
+  if (runtime.dht != nullptr) {
+    delete runtime.dht;
+    runtime.dht = nullptr;
+  }
+  runtime.dsPresent = false;
+}
+
+static void detachReedInterrupts() {
+  if (!reedInterruptsEnabled) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < reedCount; i++) {
+    uint8_t slot = reedSensorSlots[i];
+    detachInterrupt(SENSOR_PINS[slot]);
+  }
+
+  reedInterruptsEnabled = false;
+}
+
+static void printActiveSensorTypes() {
+  Serial.printf("Active sensor types: [%u,%u,%u,%u,%u]\n",
+                sensorTypesActive[0], sensorTypesActive[1], sensorTypesActive[2],
+                sensorTypesActive[3], sensorTypesActive[4]);
+}
 
 static void initSensorRouting() {
+  detachReedInterrupts();
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    clearSlotRuntime(slot);
+  }
+
   reedCount = 0;
 
   for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
-    sensorSlots[slot].oneWire = nullptr;
-    sensorSlots[slot].ds18b20 = nullptr;
-    sensorSlots[slot].dht = nullptr;
-    sensorSlots[slot].dsPresent = false;
-
-    uint8_t type = SENSOR_TYPES[slot];
+    uint8_t type = sensorTypesActive[slot];
     uint8_t pin = SENSOR_PINS[slot];
 
     if (type == SENSOR_TYPE_DHT22) {
@@ -241,6 +369,26 @@ static void initSensorRouting() {
       reedSensorSlots[reedCount++] = slot;
     }
   }
+}
+
+static void initializeSensorHardware() {
+  for (uint8_t i = 0; i < reedCount; i++) {
+    uint8_t slot = reedSensorSlots[i];
+    pinMode(SENSOR_PINS[slot], INPUT_PULLUP);
+  }
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    SensorSlotRuntime &runtime = sensorSlots[slot];
+    if (runtime.ds18b20 != nullptr) {
+      runtime.ds18b20->begin();
+      detectDs18b20(slot);
+    }
+    if (runtime.dht != nullptr) {
+      runtime.dht->begin();
+    }
+  }
+
+  lastReedMask = readReedBitmask();
 }
 
 static bool isNetworkJoined() {
@@ -350,7 +498,7 @@ static uint8_t readReedBitmask() {
 }
 
 static bool readReedStateForSlot(uint8_t slot) {
-  if (slot >= SENSOR_SLOT_COUNT || SENSOR_TYPES[slot] != SENSOR_TYPE_REED) {
+  if (slot >= SENSOR_SLOT_COUNT || sensorTypesActive[slot] != SENSOR_TYPE_REED) {
     return false;
   }
   return digitalRead(SENSOR_PINS[slot]) == LOW;
@@ -439,7 +587,7 @@ static void buildPayload() {
   appData[1] = (uint8_t)(battMv & 0xFF);
 
   for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
-    const uint8_t type = SENSOR_TYPES[slot];
+    const uint8_t type = sensorTypesActive[slot];
     const uint8_t base = PAYLOAD_HEADER_SIZE + slot * SENSOR_BLOCK_SIZE;
 
     int16_t tempEnc = INT16_MIN;
@@ -518,6 +666,72 @@ static void buildPayload() {
   Serial.printf("Payload built, ReedMask: 0x%02X, VBAT: %u mV\n", reedMask, battMv);
 }
 
+static bool applySensorTypes(const uint8_t *newTypes, bool persist) {
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    if (!isValidSensorType(newTypes[slot])) {
+      return false;
+    }
+  }
+
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    sensorTypesActive[slot] = newTypes[slot];
+  }
+
+  initSensorRouting();
+  initializeSensorHardware();
+
+  if (persist) {
+    saveSensorTypesToStorage();
+  }
+
+  printActiveSensorTypes();
+  immediateUplinkRequested = true;
+  return true;
+}
+
+void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
+  if (mcpsIndication == nullptr || mcpsIndication->Buffer == nullptr || mcpsIndication->BufferSize == 0) {
+    return;
+  }
+
+  if (mcpsIndication->Port != CFG_CONFIG_PORT) {
+    return;
+  }
+
+  const uint8_t *buffer = mcpsIndication->Buffer;
+  uint8_t length = mcpsIndication->BufferSize;
+
+  if (length == 1) {
+    Serial.printf("Config downlink ignored: single-byte commands disabled (0x%02X)\n", buffer[0]);
+    return;
+  }
+
+  uint8_t payloadOffset = 0;
+
+  if (length == SENSOR_SLOT_COUNT + 1) {
+    if (buffer[0] != CMD_SET_SENSOR_TYPES) {
+      Serial.printf("Config downlink ignored: unknown command 0x%02X\n", buffer[0]);
+      return;
+    }
+    payloadOffset = 1;
+  } else if (length != SENSOR_SLOT_COUNT) {
+    Serial.printf("Config downlink ignored: invalid length %u\n", length);
+    return;
+  }
+
+  uint8_t newTypes[SENSOR_SLOT_COUNT];
+  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
+    newTypes[slot] = buffer[payloadOffset + slot];
+  }
+
+  if (!applySensorTypes(newTypes, true)) {
+    Serial.println("Config downlink ignored: invalid sensor type value");
+    return;
+  }
+
+  Serial.printf("Sensor type config updated via downlink on port %u\n", CFG_CONFIG_PORT);
+}
+
 void prepareTxFrame(uint8_t port) {
   (void)port;
   buildPayload();
@@ -527,26 +741,21 @@ void setup() {
   Serial.begin(115200);
   autoLPM = false;
 
+  EEPROM.begin(EEPROM_STORAGE_SIZE);
+  loadDefaultSensorTypes();
+  bool loadedFromStorage = loadSensorTypesFromStorage();
+  if (!loadedFromStorage) {
+    saveSensorTypesToStorage();
+    Serial.println("No valid stored sensor config found, using defaults");
+  } else {
+    Serial.println("Loaded sensor config from storage");
+  }
+
   initSensorRouting();
+  initializeSensorHardware();
 
-  for (uint8_t i = 0; i < reedCount; i++) {
-    uint8_t slot = reedSensorSlots[i];
-    pinMode(SENSOR_PINS[slot], INPUT_PULLUP);
-  }
   pinMode(PIN_IMMEDIATE_TX, INPUT_PULLUP);
-
-  lastReedMask = readReedBitmask();
-
-  for (uint8_t slot = 0; slot < SENSOR_SLOT_COUNT; slot++) {
-    SensorSlotRuntime &runtime = sensorSlots[slot];
-    if (runtime.ds18b20 != nullptr) {
-      runtime.ds18b20->begin();
-      detectDs18b20(slot);
-    }
-    if (runtime.dht != nullptr) {
-      runtime.dht->begin();
-    }
-  }
+  printActiveSensorTypes();
 
   deviceState = DEVICE_STATE_INIT;
   LoRaWAN.ifskipjoin();

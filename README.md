@@ -37,7 +37,8 @@ Additionally:
 3. Set all project variables in `platformio.ini` (under `build_flags`):
   - LoRa keys (`LORA_DEV_EUI`, `LORA_APP_EUI`, `LORA_APP_KEY`)
   - Sensor pins (`PIN_SENSOR1..5`)
-  - Sensor type per pin (`SENSOR1_TYPE..SENSOR5_TYPE`)
+  - Default sensor type per pin (`SENSOR1_TYPE..SENSOR5_TYPE`, default: all `SENSOR_TYPE_REED`)
+  - Downlink config port (`CFG_CONFIG_PORT`, default `100`)
   - Timing (`CFG_TX_DUTY_MS`, `REED_EVENT_COOLDOWN_MS`)
 4. Set LoRa region in `platformio.ini` (e.g. `board_build.arduino.lorawan.region = EU868`)
 5. Build/Flash/Monitor:
@@ -97,6 +98,49 @@ For TTN v3, copy this file content into **Payload Formatters → Uplink**.
 
 This gives each sensor slot its own block, so decoding stays correct even if all 5 slots are configured as DHT22, DS18B20, or REED.
 
+## Change sensor types via TTN downlink (persistent)
+- First boot default: all 5 sensor slots are `SENSOR_TYPE_REED`.
+- Downlink port: `CFG_CONFIG_PORT` (default `100`).
+
+- Payload format to set all 5 types:
+  - Variant A (direct): 5 bytes = `type1,type2,type3,type4,type5`
+  - Variant B (with command): 6 bytes = `0x01,type1,type2,type3,type4,type5`
+
+Type value mapping:
+
+| Type value | Sensor type |
+|---|---|
+| `0` | `NONE` |
+| `1` | `DHT22` |
+| `2` | `DS18B20` |
+| `3` | `REED` |
+
+- Configuration is stored in internal memory and remains available after reboot.
+
+| Hex | Effect | Example payload |
+|---|---|---|
+| `0x01` | Set sensor types | `01 03 03 03 02 01` |
+
+Note: Single-byte commands like `02` or `03` are disabled and ignored by the device (serial log: `single-byte commands disabled`).
+
+TTN downlink examples (port `100`, **Hex** format):
+- All 5 sensors as REED: `03 03 03 03 03`
+- All 5 sensors as DHT22: `01 01 01 01 01`
+- All 5 sensors as DS18B20: `02 02 02 02 02`
+- Mixed (Sensor1..3=REED, Sensor4=DS18B20, Sensor5=DHT22): `03 03 03 02 01`
+- With command byte (same mixed setup): `01 03 03 03 02 01`
+
+TTN Console click path (send downlink):
+1. Open your **Application** in TTN.
+2. Go to **End devices** and open your device.
+3. Open the **Messaging** tab.
+4. In the **Downlink** section:
+  - Set **FPort** to `100`
+  - Set **Payload type** to **Hex**
+  - Paste an example payload (e.g. `03 03 03 02 01`)
+5. Click **Schedule downlink**.
+6. The downlink is delivered after the next uplink; following uplinks show the new `type_name` values.
+
 Example (shortened) in TTN Live Data:
 ```json
 {
@@ -132,8 +176,8 @@ Example (shortened) in TTN Live Data:
   - `SENSOR1_TYPE=SENSOR_TYPE_REED`
   - `SENSOR2_TYPE=SENSOR_TYPE_REED`
   - `SENSOR3_TYPE=SENSOR_TYPE_REED`
-  - `SENSOR4_TYPE=SENSOR_TYPE_DS18B20`
-  - `SENSOR5_TYPE=SENSOR_TYPE_DHT22`
+  - `SENSOR4_TYPE=SENSOR_TYPE_REED`
+  - `SENSOR5_TYPE=SENSOR_TYPE_REED`
 
 ### Example 1: 3x Reed + DS18B20 + DHT22
 ```ini
@@ -170,8 +214,9 @@ Example (shortened) in TTN Live Data:
   - `PIN_SENSOR1=GPIO3` (`SENSOR_TYPE_REED`)
   - `PIN_SENSOR2=GPIO2` (`SENSOR_TYPE_REED`)
   - `PIN_SENSOR3=GPIO1` (`SENSOR_TYPE_REED`)
-  - `PIN_SENSOR4=GPIO5` (`SENSOR_TYPE_DS18B20`)
-  - `PIN_SENSOR5=GPIO0` (`SENSOR_TYPE_DHT22`)
+  - `PIN_SENSOR4=GPIO5` (`SENSOR_TYPE_REED`)
+  - `PIN_SENSOR5=GPIO0` (`SENSOR_TYPE_REED`)
+  - Type changes to DHT22/DS18B20 are done via TTN downlink
   - `PIN_IMMEDIATE_TX=GPIO7`
 - DS18B20 requires `4.7k` pull-up between Data and `3V3`
 - WSL upload/monitor:
